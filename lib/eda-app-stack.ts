@@ -32,6 +32,10 @@ export class EDAAppStack extends cdk.Stack {
       displayName: "New Image topic",
     });
 
+    const mailerQ = new sqs.Queue(this, "mailer-queue", {
+      receiveMessageWaitTime: cdk.Duration.seconds(10),
+    });
+
     // Lambda functions
 
     const processImageFn = new lambdanode.NodejsFunction(
@@ -45,6 +49,18 @@ export class EDAAppStack extends cdk.Stack {
       }
     );
 
+    const mailerFn = new lambdanode.NodejsFunction(this, "mailer-function", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 1024,
+      timeout: cdk.Duration.seconds(10), // 增加超时时间以确保有足够时间发送邮件
+      entry: `${__dirname}/../lambdas/mailer.ts`,
+      environment: {
+        SES_REGION: 'eu-west-1',
+        SES_EMAIL_FROM: 'masihan0303@gmail.com',
+        SES_EMAIL_TO: 'masihan0303@gmail.com'
+      }
+    });
+
     // S3 --> SNS
     imagesBucket.addEventNotification(
       s3.EventType.OBJECT_CREATED,
@@ -56,17 +72,38 @@ export class EDAAppStack extends cdk.Stack {
       new subs.SqsSubscription(imageProcessQueue)
     );
 
+    newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ)); 
+
     // SQS --> Lambda
     const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
       batchSize: 5,
       maxBatchingWindow: cdk.Duration.seconds(5),
     });
 
+    const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
+      batchSize: 5,
+      maxBatchingWindow: cdk.Duration.seconds(5),
+    });
+
     processImageFn.addEventSource(newImageEventSource);
+
+    mailerFn.addEventSource(newImageMailEventSource);
 
     // Permissions
 
     imagesBucket.grantRead(processImageFn);
+
+    mailerFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "ses:SendEmail",
+          "ses:SendRawEmail",
+          "ses:SendTemplatedEmail",
+        ],
+        resources: ["*"],
+      })
+    );
 
     // Output
     
